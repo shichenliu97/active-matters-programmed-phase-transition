@@ -1,0 +1,68 @@
+% Percolation theory simulation
+% Rosalind Pan
+
+set simul system
+{
+    time_step = 0.01
+    viscosity = 0.05
+    display = ( style=2; )
+}
+
+set space cell
+{
+    shape = circle
+}
+
+new cell
+{
+    radius = 17.84
+}
+
+set fiber microtubule
+{
+    rigidity = 20
+    segmentation = 0.5
+    confine = inside, 100
+    display = ( line_width=1; )
+}
+
+%new x microtubule
+%{
+%    length = l
+%}
+
+set hand kinesin_plus
+{
+    binding_rate = 10
+    binding_range = 0.01
+    unbinding_rate = 0.1
+    unbinding_force = 3
+
+    activity = move
+    unloaded_speed = 0.6
+    stall_force = 6
+
+    bind_also_end = 1
+    hold_growing_end = 1
+
+    display = ( color=orange; size=1; width=1; )
+}
+
+set couple complex_plus
+{
+    hand1 = kinesin_plus
+    hand2 = kinesin_plus
+    stiffness = 10
+    diffusion = 10
+}
+
+new 5000 complex_plus
+
+run 100000 system
+{
+    nb_frames = 60
+}
+report fiber:position report/fiber_position.txt
+report fiber:length report/fiber_length.txt
+report fiber:force report/fiber_force.txt
+report couple:force report/couple_force.txt
