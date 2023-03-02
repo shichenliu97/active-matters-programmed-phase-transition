@@ -14,7 +14,7 @@ I simulated the system using long MTs of length 2 to 15, with an interval of 1. 
 
 Additionally, we also reported the center position of each microtubule. Using the code in `active-matters-programmed-phase-transition/aster-analysis.ipynb`, I quantified quantified the percentage of short microtubules in the central aster region. As shown in the figure below, this is around 75% to 80% and is much higher the ratio between the area of the aster and the total area of the system, therefore it is unlikely that the short MTs aggregated in the aster region by chance. This increases our confidence that a global contractile network has indeed formed.
 
-![percent short MTs](./figures/percolation.png)
+![percent short MTs](../figures/percolation.png)
 
 ## Run series 3
 Now that we have determined the minimum length of long MTs requried to produce global contraction, we would also like to know the minimum number/percentage of long MTs needed. As a first pass, I reduced the number of long MTs from 10% to 1%. Here we see that we no longer see a global contractile network even when the MTs are at the maximum length of 15. However, we do see some asters merging as the simulation progresses, and therefore it may be possible that the system will eventually reach global contraction if the simulation was allowed to run for longer.
@@ -35,4 +35,10 @@ In this series of simulations we set the total number of MTs to be 30, which, as
 
 ## Run series 8
 We are interested to see whether initial incubation with dead motors would facilitate global contraction. I first incubated the MTs in 1000 dead motors and then added 5000 active motors. Interestingly, this appears to inhibit global contraction as it both increases the minimum required length of the long MTs and increases the amount of time needed for the global contractile network to form even when the long MTs are above the required length.
+
+## Run series 9
+To more closely approximate our experimental conditions, here we define the length of the MTs according to a negative binomial distribution with a long tail. We continue to observe global contraction when $p=0.4$.
+
+## Run series 10
+We would like to determine the maximum allowed value of $p$ in a negatie binomial distribution. It turns out that we do not get global contraction for $p$ above 0.4. Even when $p = 0.4$, we do not consistently get global contraction.
 
