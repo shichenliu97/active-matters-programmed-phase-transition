@@ -22,7 +22,7 @@ Now that we have determined the minimum length of long MTs requried to produce g
 ## Run series 4
 At this point we noticed that in the initial condition, the MTs are fairly dense within our field of view. In a typical experiment, there is around 1 MT per $\mu m^3$ of space. Translating this to a 2D space, we would still expect to see 1 MT per $\mu m^2$ of space. To approximate the experimental conditions as closely as possible, we reduced the total number of MTs in the system to 1000 MTs in a circle of radius 17.84 (which means the area of the circle is around 1000). Additionally, we reduced the length of the short microtubules from 1.5 to 1.
 
-Under these conditions, we can see by eye that the MTs are a lot more spare in the initial frame than before. Additionally, when 10% of the MTs are long MTs, the minimum length of the long MTs required for global contraction is about the same as before, at a length of 9. However, it is worth noting that in terms of ratio, this is 9 times the length of the short MTs whereas before, it was 6 times the length of the short MTs.
+Under these conditions, we can see by eye that the MTs are a lot more sparse in the initial frame than before. Additionally, when 10% of the MTs are long MTs, the minimum length of the long MTs required for global contraction is about the same as before, at a length of 9. However, it is worth noting that in terms of ratio, this is 9 times the length of the short MTs whereas before, it was 6 times the length of the short MTs.
 
 ## Run series 5
 As in run series 3, we reduce the number of long MTs from 10% to 1%. Again, we do not see global contraction even when the MTs are at the maximum length of 15.
