@@ -44,21 +44,22 @@ def generate_graph(shape, scale, total_length, max_edges_per_node = 10):
     G = nx.Graph()
     G.add_nodes_from(range(n))
 
+    mean = 9
+    std_dev = 2  # adjust as needed
+    max_len = 25  # you used this as your max length
+
     for i in range(n):
         # The counter for the number of edges from the node
         edges_count = 0
         for j in range(i+1, n):
-            # Only consider edge lengths greater than or equal to 9
-            if edge_lengths[i] >= 9:
-                # Create a normalized edge probability between 0 and 1
-                edge_prob = edge_lengths[i] / 25  # As maximum possible edge length is 25
+            edge_prob = stats.norm(mean, std_dev).pdf(edge_lengths[i]) / stats.norm(mean, std_dev).pdf(mean)
 
-                # Generate a random number between 0 and 1
-                rand_num = np.random.uniform(0, 1)
+            # Generate a random number between 0 and 1
+            rand_num = np.random.uniform(0, 1)
                 
-                if rand_num <= edge_prob and edges_count < max_edges_per_node:
-                    G.add_edge(i, j)
-                    edges_count += 1
+            if rand_num <= edge_prob and edges_count < max_edges_per_node:
+                G.add_edge(i, j)
+                edges_count += 1
     return G
 
 
