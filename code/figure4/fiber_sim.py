@@ -1,4 +1,22 @@
-"""Fiber intersection network: geometry, connectivity, and Lees-Edwards shear."""
+"""
+Fiber intersection network simulation.
+
+N_f = budget/λ fibers with lengths ~ Gamma(k, λ/k) in L×L periodic box.
+Geometric intersections → graph nodes. Consecutive intersections on same
+fiber → edges. Central-force springs + position-based bending stiffness.
+
+Key insight: fiber intersection graph naturally has z < 4 (fiber endpoints
+reduce coordination). Central-force only → sub-isostatic → always floppy.
+Bending stiffness adds constraints, enabling a connectivity-rigidity gap.
+
+Bending model: for each triple (a,b,c) on a fiber, penalize b deviating
+from the line a-c. E = (κ/2L)(dev)² where dev = distance of b from line ac.
+This is numerically stable (no trig, no 1/r singularity).
+
+Usage:
+    python fiber_sim.py --validate
+    python fiber_sim.py --sweep --budget 300 --kappa 1.0 --n_seeds 20
+"""
 import numpy as np
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
@@ -200,7 +218,8 @@ class FiberNetwork:
         self._bend_w2 = np.empty(0)
         self._bend_Lt = np.empty(0)
 
-    #topology
+    # ── topology ──
+
     def giant_component_frac(self):
         if self.n_nodes < 2:
             return 0.0
@@ -246,7 +265,8 @@ class FiberNetwork:
         n_comp, _ = connected_components(A, directed=False)
         return self.n_edges - self.n_nodes + n_comp
 
-    #mechanics
+    # ── mechanics ──
+
     def shear_modulus(self, gamma=0.01):
         """Energy-based G with Lees-Edwards PBC (no fixed walls).
         G = (E(+γ)+E(-γ)) / (γ²A). Always non-negative."""
@@ -264,9 +284,7 @@ class FiberNetwork:
         return (E_p + E_m) / (gamma**2 * self.L**2)
 
     def shear_edge_energies(self, gamma=0.01):
-        """Apply shear, FIRE-relax, return per-edge stretch energies.
-        Returns (relaxed_pos, edge_energies) where edge_energies[i] is
-        the stretch energy 0.5*(|d_i| - L0_i)^2 of edge i."""
+        """Apply shear, FIRE-relax, return per-edge stretch energies."""
         if self.n_nodes < 4 or self.n_edges < 4:
             return self.pos.copy(), np.zeros(self.n_edges)
         p = self.pos.copy()
@@ -279,7 +297,91 @@ class FiberNetwork:
         edge_E = 0.5 * (dist - self.rest_L)**2
         return p, edge_E
 
-    #Lees-Edwards shear mechanics
+    def _shear_relax(self, gamma):
+        """Apply affine shear and FIRE-relax. Returns (relaxed_pos, affine_pos)."""
+        p_aff = self.pos.copy()
+        p_aff[:, 0] += gamma * (p_aff[:, 1] - self.L / 2)
+        p_relax = self._fire_le(p_aff.copy(), gamma)
+        return p_relax, p_aff
+
+    def energy_components(self, gamma=0.01):
+        """Return (E_stretch, E_bend) after shear+relax."""
+        if self.n_nodes < 4 or self.n_edges < 4:
+            return 0.0, 0.0
+        p, _ = self._shear_relax(gamma)
+        E_s = 0.0
+        if self.n_edges > 0:
+            i, j = self.edges[:, 0], self.edges[:, 1]
+            d = (p[j] - p[i]).copy()
+            d = self._min_image_le(d, gamma)
+            dist = np.linalg.norm(d, axis=1)
+            E_s = 0.5 * np.sum((dist - self.rest_L)**2)
+        E_b = 0.0
+        if self.kappa > 0 and len(self._bend_a) > 0:
+            a, b, c = self._bend_a, self._bend_b, self._bend_c
+            d_ba = (p[a] - p[b]).copy()
+            d_bc = (p[c] - p[b]).copy()
+            self._min_image_le(d_ba, gamma)
+            self._min_image_le(d_bc, gamma)
+            dev = -(self._bend_w2[:, None] * d_ba + self._bend_w1[:, None] * d_bc)
+            E_b = 0.5 * self.kappa * np.sum(np.sum(dev**2, axis=1) / self._bend_Lt)
+        return float(E_s), float(E_b)
+
+    def non_affinity(self, gamma=0.01):
+        """Non-affinity parameter Gamma = <|delta_na|^2> / <|delta_aff|^2>."""
+        if self.n_nodes < 4 or self.n_edges < 4:
+            return 0.0
+        p_relax, p_aff = self._shear_relax(gamma)
+        delta_aff = p_aff - self.pos
+        delta_na = p_relax - p_aff
+        aff_sq = np.mean(np.sum(delta_aff**2, axis=1))
+        na_sq = np.mean(np.sum(delta_na**2, axis=1))
+        if aff_sq < 1e-30:
+            return 0.0
+        return float(na_sq / aff_sq)
+
+    def participation_ratio(self, gamma=0.01):
+        """PR = (sum e_i)^2 / (N * sum e_i^2). Fraction of edges carrying load."""
+        if self.n_nodes < 4 or self.n_edges < 4:
+            return 0.0
+        _, edge_E = self.shear_edge_energies(gamma)
+        E_sum = edge_E.sum()
+        E2_sum = (edge_E**2).sum()
+        if E2_sum < 1e-30:
+            return 0.0
+        return float(E_sum**2 / (len(edge_E) * E2_sum))
+
+    def full_measure(self, gamma=0.01):
+        """Complete measurement dict for dimensionless sweep."""
+        S = self.giant_component_frac()
+        z = self.mean_z()
+        n_comp = self.n_components()
+        beta1 = self.n_edges - self.n_nodes + n_comp if self.n_nodes > 1 else 0
+        k_per = self.crosslinks_per_fiber()
+        k_mean = float(k_per.mean()) if len(k_per) > 0 else 0.0
+        k_std = float(k_per.std()) if len(k_per) > 0 else 0.0
+        k_dist = np.bincount(k_per).tolist() if len(k_per) > 0 else []
+        n_active = len(self._fiber_xl)
+        f_iso = 1.0 - n_active / self.n_f if self.n_f > 0 else 1.0
+
+        G = self.shear_modulus(gamma) if self.n_nodes > 10 else 0.0
+        E_s, E_b = self.energy_components(gamma) if self.n_nodes > 10 else (0.0, 0.0)
+        Gamma = self.non_affinity(gamma) if self.n_nodes > 10 else 0.0
+        PR = self.participation_ratio(gamma) if self.n_nodes > 10 else 0.0
+
+        return {
+            'S': float(S), 'z': float(z), 'G': float(G),
+            'N_nodes': self.n_nodes, 'N_edges': self.n_edges,
+            'N_components': n_comp, 'beta1': beta1,
+            'k_mean': k_mean, 'k_std': k_std, 'k_distribution': k_dist,
+            'N_fibers_total': self.n_f, 'N_fibers_with_xl': n_active,
+            'f_isolated': float(f_iso),
+            'E_total': E_s + E_b, 'E_stretch': E_s, 'E_bend': E_b,
+            'Gamma': Gamma, 'PR': PR,
+        }
+
+    # ── Lees-Edwards shear mechanics ──
+
     def _min_image_le(self, d, gamma):
         """Lees-Edwards minimum image: y-wrap also shifts x by γL."""
         n_y = np.round(d[:, 1] / self.L)
@@ -470,7 +572,8 @@ class FiberNetwork:
 
         return F
 
-    #measure
+    # ── measure ──
+
     def measure(self, compute_G=True):
         S = self.giant_component_frac()
         z = self.mean_z()
@@ -486,6 +589,8 @@ class FiberNetwork:
             'density': self.n_nodes / self.L**2,
         }
 
+
+# ── Parallel sweep ───────────────────────────────────────────────
 
 def _run_one(args):
     lam, seed, L, budget, k_shape, p_xl, kappa, compute_G = args
@@ -508,6 +613,7 @@ def sweep(lam_range, n_seeds=20, L=10.0, budget=300, k_shape=1,
     return results
 
 
+# ── Analysis ─────────────────────────────────────────────────────
 
 def find_thresholds(results):
     import pandas as pd
@@ -547,6 +653,7 @@ def find_thresholds(results):
     }
 
 
+# ── Plotting ─────────────────────────────────────────────────────
 
 def plot_sweep(results, title='', save=None):
     import pandas as pd
@@ -645,17 +752,136 @@ def plot_network(net, ax=None, title=''):
     return ax
 
 
+# ── Validation ───────────────────────────────────────────────────
+
+def validate():
+    ok = True
+
+    def check(name, cond, detail=''):
+        nonlocal ok
+        if cond:
+            print(f'  ✓ {name}')
+        else:
+            print(f'  ✗ {name} — {detail}')
+            ok = False
+
+    print('\n── Step 1: Segment intersection ──')
+    net = FiberNetwork(L=10, budget=100, lam=1, seed=0)
+    net.n_f = 2
+    net.starts = np.array([[0.0, 5.0], [5.0, 0.0]])
+    net.ends = np.array([[10.0, 5.0], [5.0, 10.0]])
+    net.d_all = net.ends - net.starts
+    net._find_intersections()
+    check('2 crossing fibers → 1 intersection', len(net.xsects) == 1,
+          f'got {len(net.xsects)}')
+    if net.xsects:
+        pt = np.array([net.xsects[0][4], net.xsects[0][5]])
+        check('intersection at (5,5)', np.allclose(pt, [5, 5], atol=0.1),
+              f'got {pt}')
+
+    net.n_f = 3
+    net.starts = np.array([[2., 3.], [8., 3.], [5., 2.]])
+    net.ends = np.array([[8., 7.], [2., 7.], [5., 8.]])
+    net.d_all = net.ends - net.starts
+    net._find_intersections()
+    check('3 crossing fibers → 3 intersections', len(net.xsects) == 3,
+          f'got {len(net.xsects)}')
+
+    print('\n── Step 2: Graph construction ──')
+    net2 = FiberNetwork(L=10, budget=300, lam=1.5, seed=42, kappa=0)
+    net2.build()
+    z = net2.mean_z()
+    check(f'z in [2.5, 4.2]: z={z:.2f}', 2.5 < z < 4.2, f'z = {z:.2f}')
+    check(f'has nodes: {net2.n_nodes}', net2.n_nodes > 10)
+    check(f'has edges: {net2.n_edges}', net2.n_edges > 10)
+
+    net3 = FiberNetwork(L=10, budget=300, lam=1.5, p_xl=0.5, seed=42, kappa=0)
+    net3.build()
+    z3 = net3.mean_z()
+    check(f'z with p_xl=0.5: z={z3:.2f} ≤ z_full+0.5', z3 <= z + 0.5)
+
+    print('\n── Step 3: Connectivity ──')
+    lams = np.linspace(0.3, 4.0, 15)
+    S_vals = []
+    for lam in lams:
+        net_t = FiberNetwork(L=10, budget=300, lam=lam, seed=0, kappa=0)
+        net_t.build()
+        S_vals.append(net_t.giant_component_frac())
+    S_vals = np.array(S_vals)
+    check(f'S rises: {S_vals[0]:.2f} → {S_vals[-1]:.2f}',
+          S_vals[-1] > S_vals[0] + 0.3)
+    check('S > 0.8 at large λ', S_vals[-1] > 0.8, f'{S_vals[-1]:.2f}')
+
+    print('\n── Step 4: Bending force sanity ──')
+    # 3 collinear nodes: bending force should be zero
+    net4 = FiberNetwork(L=10, budget=100, lam=1, kappa=1.0, seed=0)
+    net4.pos = np.array([[2.0, 5.0], [5.0, 5.0], [8.0, 5.0]])
+    net4.n_nodes = 3
+    net4.edges = np.array([[0, 1], [1, 2]])
+    net4.rest_L = np.array([3.0, 3.0])
+    net4.n_edges = 2
+    net4._bend_a = np.array([0])
+    net4._bend_b = np.array([1])
+    net4._bend_c = np.array([2])
+    net4._bend_Lt = np.array([6.0])
+    net4._bend_w1 = np.array([0.5])
+    net4._bend_w2 = np.array([0.5])
+    F_straight = net4._bending_forces(net4.pos)
+    check('bending force = 0 for straight fiber',
+          np.allclose(F_straight, 0, atol=1e-10),
+          f'max |F| = {np.abs(F_straight).max():.2e}')
+
+    # bend middle node: should get restoring force
+    bent_pos = net4.pos.copy()
+    bent_pos[1, 1] += 0.5  # push middle up
+    F_bent = net4._bending_forces(bent_pos)
+    check('bending force pushes bent node back (F_y < 0)',
+          F_bent[1, 1] < 0,
+          f'F_b_y = {F_bent[1, 1]:.4f}')
+    check('bending forces sum to zero',
+          np.allclose(F_bent.sum(axis=0), 0, atol=1e-10),
+          f'sum = {F_bent.sum(axis=0)}')
+
+    print('\n── Step 5: Shear modulus (Lees-Edwards energy) ──')
+    net_r = FiberNetwork(L=10, budget=300, lam=3.0, seed=0, kappa=1.0)
+    net_r.build()
+    G = net_r.shear_modulus()
+    print(f'  info: κ=1, λ=3: G={G:.4f}, z={net_r.mean_z():.2f}, '
+          f'S={net_r.giant_component_frac():.2f}, triples={len(net_r._bend_a)}')
+    check(f'G > 0 with bending: G={G:.4f}', G > 0.01, f'G = {G}')
+
+    net_s = FiberNetwork(L=10, budget=300, lam=0.3, seed=0, kappa=1.0)
+    net_s.build()
+    G_s = net_s.shear_modulus()
+    print(f'  info: κ=1, λ=0.3 (sparse): G={G_s:.6f}, S={net_s.giant_component_frac():.2f}')
+    check(f'G ≈ 0 for sparse/disconnected: G={G_s:.4f}',
+          G_s < 0.1, f'G = {G_s}')
+
+    net_cf = FiberNetwork(L=10, budget=300, lam=3.0, seed=0, kappa=0)
+    net_cf.build()
+    G_cf = net_cf.shear_modulus()
+    print(f'  info: κ=0, λ=3: G={G_cf:.6f}')
+    check(f'G(κ=1) > G(κ=0): {G:.4f} vs {G_cf:.4f}', G > G_cf,
+          f'G_bend={G:.4f}, G_cf={G_cf:.4f}')
+
+    print(f'\n{"=" * 50}')
+    print(f'{"VALIDATION PASSED" if ok else "VALIDATION FAILED"}')
+    print(f'{"=" * 50}')
+    return ok
 
 
+# ── Main ─────────────────────────────────────────────────────────
 
 def run_sweep(args):
     lam_range = np.linspace(args.lam_min, args.lam_max, args.n_lam)
     tag = f'B{args.budget}_k{args.kappa}_pxl{args.p_xl}'
 
-    print(f'Sweep: budget={args.budget}, kappa={args.kappa}, p_xl={args.p_xl}, '
-          f'lam=[{args.lam_min:.1f},{args.lam_max:.1f}], '
-          f'{args.n_lam} pts x {args.n_seeds} seeds, '
-          f'workers={args.n_workers}, compute_G={not args.skip_G}')
+    print(f'\n{"=" * 60}')
+    print(f'Sweep: budget={args.budget}, κ={args.kappa}, p_xl={args.p_xl}, '
+          f'λ=[{args.lam_min:.1f},{args.lam_max:.1f}], '
+          f'{args.n_lam} pts × {args.n_seeds} seeds')
+    print(f'Workers: {args.n_workers}, compute_G: {not args.skip_G}')
+    print(f'{"=" * 60}')
 
     results = sweep(lam_range, n_seeds=args.n_seeds, L=args.L,
                     budget=args.budget, k_shape=args.k_shape,
@@ -679,9 +905,13 @@ def run_sweep(args):
     print(f'  z_mean  = {th["z_mean"]:.2f} ± {th["z_std"]:.2f}')
 
     if th['gap'] is not None and th['gap'] > 0:
-        print(f'  GAP: dlam = {th["gap"]:.3f}')
+        print(f'\n  ★ GAP EXISTS: Δλ = {th["gap"]:.3f} ★')
+    elif th['lam_conn'] is not None and th['lam_rigid'] is None:
+        print(f'\n  ⚠ S transition found but no G transition')
     elif th['gap'] is not None and th['gap'] <= 0:
-        print(f'  No gap -- G rises with S')
+        print(f'\n  ⚠ NO GAP — G rises with S')
+    else:
+        print(f'\n  ⚠ Thresholds not found — adjust λ range or budget')
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
     snap_lams = [lam_range[len(lam_range) // 6],
@@ -706,6 +936,7 @@ def run_sweep(args):
 
 def main():
     p = argparse.ArgumentParser()
+    p.add_argument('--validate', action='store_true')
     p.add_argument('--sweep', action='store_true')
     p.add_argument('--budget', type=float, default=300)
     p.add_argument('--kappa', type=float, default=1.0)
@@ -720,7 +951,15 @@ def main():
     p.add_argument('--skip_G', action='store_true')
     args = p.parse_args()
 
-    run_sweep(args)
+    if args.validate:
+        validate()
+    elif args.sweep:
+        run_sweep(args)
+    else:
+        if validate():
+            args.n_seeds = 10
+            args.n_lam = 20
+            run_sweep(args)
 
 
 if __name__ == '__main__':
